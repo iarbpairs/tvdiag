@@ -1,141 +1,103 @@
-// TV Diag service — runs in TizenBrew Node.js service context
-// Collects system info and beacons to Mac at 192.168.0.73:8008
+// TV Diag service — TizenBrew Node.js service context
+// Collects system info, beacons to Mac, AND writes local fallback file
 const fs = require('fs');
-const http = require('http');
-const os = require('os');
-
-const BEACON = 'http://192.168.0.73:8008/tv-results';
+const BEACON_HOST = '192.168.0.73';
+const BEACON_PORT = 8008;
 const results = {};
 
 function collect() {
-  // Basic process info
   results.uid = process.getuid ? process.getuid() : 'no getuid';
   results.gid = process.getgid ? process.getgid() : 'no getgid';
   results.pid = process.pid;
   results.ppid = process.ppid;
-  results.nodeVersion = process.version;
-  results.platform = process.platform;
+  results.node = process.version;
   results.arch = process.arch;
-  results.env = process.env;
+  results.env = JSON.parse(JSON.stringify(process.env || {}));
 
-  // Filesystem probes (unlimitedstorage should allow these)
-  const paths = [
-    '/proc/version',
-    '/proc/cpuinfo',
-    '/proc/self/status',
-    '/proc/self/maps',
-    '/proc/self/environ',
-    '/opt/usr/bin/',
-    '/opt/usr/sbin/',
-    '/bin/',
-    '/usr/bin/',
-    '/etc/passwd',
-    '/system/bin/',
-    '/system/xbin/',
-  ];
-
+  const paths = ['/proc/version','/proc/cpuinfo','/proc/self/status','/proc/self/maps','/proc/self/environ','/etc/passwd','/bin/','/usr/bin/','/system/bin/','/opt/usr/bin/'];
   results.fs = {};
   for (const p of paths) {
     try {
-      if (p.endsWith('/')) {
-        const items = fs.readdirSync(p);
-        results.fs[p] = items.slice(0, 50);
-      } else {
-        const content = fs.readFileSync(p, 'utf-8');
-        results.fs[p] = content.substring(0, 2000);
-      }
-    } catch (e) {
-      results.fs[p] = 'ERR: ' + e.message;
-    }
+      if (p.endsWith('/')) results.fs[p] = fs.readdirSync(p).slice(0,50).join(',');
+      else results.fs[p] = fs.readFileSync(p,'utf-8').substring(0,3000);
+    } catch(e) { results.fs[p] = 'ERR: '+e.message; }
   }
 
-  // Try child_process (the big one)
+  // child_process — the big one
   try {
     const cp = require('child_process');
-    results.child_process = 'AVAILABLE';
-    const idOut = cp.execSync('id', {timeout: 5000}).toString().trim();
-    results.id = idOut;
-    const unameOut = cp.execSync('uname -a', {timeout: 5000}).toString().trim();
-    results.uname = unameOut;
-    const whoami = cp.execSync('whoami', {timeout: 5000}).toString().trim();
-    results.whoami = whoami;
-
-    // SUID scan
-    try {
-      const suid = cp.execSync('find / -perm -4000 -type f 2>/dev/null | head -40', {timeout: 15000}).toString().trim();
-      results.suid = suid || '(none found)';
-    } catch (e) {
-      results.suid = 'find failed: ' + e.message;
-    }
-
-    // SMACK check
-    try {
-      const smack = cp.execSync('cat /proc/self/attr/current 2>/dev/null; echo ---; cat /sys/fs/smack/*/ 2>/dev/null | head -20', {timeout: 5000}).toString().trim();
-      results.smack = smack || '(no /sys/fs/smack found)';
-    } catch (e) {
-      results.smack = 'SMACK check failed: ' + e.message;
-    }
-
-    // Kernel modules
-    try {
-      const mods = cp.execSync('ls /proc/modules 2>/dev/null && cat /proc/modules | head -20', {timeout: 5000}).toString().trim();
-      results.kmods = mods;
-    } catch (e) {
-      results.kmods = 'modules check failed';
-    }
-
-    // Check for interesting binaries
-    try {
-      const interesting = cp.execSync('which nc ncat socat python python2 python3 busybox su 2>/dev/null; ls /bin/sh /system/bin/sh /bin/bash /system/bin/busybox 2>/dev/null', {timeout: 5000}).toString().trim();
-      results.shell_bins = interesting || '(none found)';
-    } catch (e) {
-      results.shell_bins = 'bin check failed: ' + e.message;
-    }
-
-  } catch (e) {
-    results.child_process = 'NOT AVAILABLE: ' + e.message;
+    results.cp = 'AVAILABLE';
+    results.id = cp.execSync('id',{timeout:5000}).toString().trim();
+    results.uname = cp.execSync('uname -a',{timeout:5000}).toString().trim();
+    results.whoami = cp.execSync('whoami',{timeout:5000}).toString().trim();
+    try { results.suid = cp.execSync('find / -perm -4000 -type f 2>/dev/null | head -40',{timeout:15000}).toString().trim(); } catch(e){results.suid='ERR:'+e.message;}
+    try { results.smack = cp.execSync('cat /proc/self/attr/current 2>/dev/null; echo ---; cat /proc/self/attr/exec 2>/dev/null; echo ---; ls /sys/fs/smack/ 2>/dev/null',{timeout:5000}).toString().trim(); } catch(e){results.smack='ERR:'+e.message;}
+    try { results.bins = cp.execSync('which nc ncat socat python python2 busybox su wget curl 2>/dev/null; ls /bin/sh /system/bin/sh /system/bin/busybox 2>/dev/null',{timeout:5000}).toString().trim(); } catch(e){results.bins='ERR:'+e.message;}
+    try { results.kmods = cp.execSync('head -30 /proc/modules 2>/dev/null',{timeout:5000}).toString().trim(); } catch(e){results.kmods='ERR:'+e.message;}
+  } catch(e) {
+    results.cp = 'NOT_AVAILABLE: '+e.message;
   }
 
-  // Tizen API info
-  try {
-    results.tizen_version = tizen.systeminfo.getCapability ? tizen.systeminfo.getCapability('http://tizen.org/feature/platform.version') : 'unknown';
-    results.tizen_model = tizen.systeminfo.getCapability ? tizen.systeminfo.getCapability('http://tizen.org/feature/device/model') : 'unknown';
-  } catch (e) {
-    results.tizen_version = 'n/a';
-  }
+  // Tizen APIs
+  try { results.tver = tizen.systeminfo.getCapability('http://tizen.org/feature/platform.version'); } catch(e){results.tver='n/a';}
+  try { results.model = tizen.systeminfo.getCapability('http://tizen.org/feature/device/model'); } catch(e){results.model='n/a';}
 
   return results;
 }
 
-function beacon(data) {
-  return new Promise((resolve) => {
-    const body = JSON.stringify(data, null, 2);
-    const req = http.request({
-      hostname: '192.168.0.73',
-      port: 8008,
-      path: '/tv-results',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      },
-      timeout: 10000
-    }, (res) => {
-      let resp = '';
-      res.on('data', (c) => resp += c);
-      res.on('end', () => resolve(resp));
-    });
-    req.on('error', (e) => resolve('beacon failed: ' + e.message));
-    req.on('timeout', () => { req.destroy(); resolve('beacon timeout'); });
-    req.write(body);
-    req.end();
-  });
+// Write local fallback (readable via sdbd sync or TizenBrew proxy)
+function writeLocal(data) {
+  try {
+    const json = JSON.stringify(data, null, 2);
+    fs.writeFileSync('/home/owner/share/tvdiag-results.json', json);
+    console.log('[tvdiag] wrote /home/owner/share/tvdiag-results.json ('+json.length+' bytes)');
+    return true;
+  } catch(e) {
+    console.log('[tvdiag] local write failed: '+e.message);
+    return false;
+  }
 }
 
-// Main
+// Beacon: try multiple methods
+function beacon(data) {
+  const body = JSON.stringify(data, null, 2);
+  const promises = [];
+
+  // Method 1: global fetch (available in Tizen Node.js)
+  if (typeof fetch === 'function') {
+    promises.push(
+      fetch(`http://${BEACON_HOST}:${BEACON_PORT}/tv-results`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)},
+        body: body
+      }).then(r => r.text()).then(t => {
+        console.log('[tvdiag] fetch beacon: '+t);
+      }).catch(e => console.log('[tvdiag] fetch beacon failed: '+e.message))
+    );
+  }
+
+  // Method 2: raw TCP socket (if available)
+  try {
+    const net = require('net');
+    const sock = net.connect({host:BEACON_HOST, port:BEACON_PORT});
+    const httpBody = 'POST /tv-results HTTP/1.1\r\nHost: '+BEACON_HOST+':'+BEACON_PORT+'\r\nContent-Type: application/json\r\nContent-Length: '+body.length+'\r\nConnection: close\r\n\r\n'+body;
+    promises.push(new Promise((resolve) => {
+      let resp = '';
+      sock.on('data', d => resp += d.toString());
+      sock.on('end', () => { console.log('[tvdiag] socket beacon: '+resp.substring(0,200)); resolve(); });
+      sock.on('error', e => { console.log('[tvdiag] socket beacon failed: '+e.message); resolve(); });
+      sock.setTimeout(10000);
+      sock.on('timeout', () => { sock.destroy(); resolve(); });
+      sock.write(httpBody);
+    }));
+  } catch(e) {
+    console.log('[tvdiag] socket method unavailable: '+e.message);
+  }
+
+  return Promise.all(promises).catch(e => console.log('[tvdiag] all beacons failed: '+e.message));
+}
+
+// Run
 collect();
-beacon(results).then((r) => {
-  console.log('[tvdiag] beacon result:', r);
-}).catch((e) => {
-  console.log('[tvdiag] beacon error:', e.message);
-});
+writeLocal(results);
+beacon(results);
