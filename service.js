@@ -58,47 +58,95 @@ function writeLocal(data) {
   }
 }
 
-// Beacon: try multiple methods
-function beacon(data) {
+// Beacon: try EVERY possible method, with retry
+function beacon(data, attempt) {
+  attempt = attempt || 0;
   const body = JSON.stringify(data, null, 2);
+  const url = 'http://' + BEACON_HOST + ':' + BEACON_PORT + '/tv-results';
   const promises = [];
 
-  // Method 1: global fetch (available in Tizen Node.js)
+  // Method 1: global fetch
   if (typeof fetch === 'function') {
     promises.push(
-      fetch(`http://${BEACON_HOST}:${BEACON_PORT}/tv-results`, {
+      fetch(url, {
         method: 'POST',
-        headers: {'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)},
+        headers: {'Content-Type':'application/json'},
         body: body
-      }).then(r => r.text()).then(t => {
-        console.log('[tvdiag] fetch beacon: '+t);
-      }).catch(e => console.log('[tvdiag] fetch beacon failed: '+e.message))
+      }).then(function(r) { return r.text(); })
+        .then(function(t) { console.log('[tvdiag] fetch beacon: '+t); })
+        .catch(function(e) { console.log('[tvdiag] fetch beacon failed: '+e.message); })
     );
+  } else {
+    console.log('[tvdiag] fetch not available');
   }
 
-  // Method 2: raw TCP socket (if available)
+  // Method 2: http module
   try {
-    const net = require('net');
-    const sock = net.connect({host:BEACON_HOST, port:BEACON_PORT});
-    const httpBody = 'POST /tv-results HTTP/1.1\r\nHost: '+BEACON_HOST+':'+BEACON_PORT+'\r\nContent-Type: application/json\r\nContent-Length: '+body.length+'\r\nConnection: close\r\n\r\n'+body;
-    promises.push(new Promise((resolve) => {
-      let resp = '';
-      sock.on('data', d => resp += d.toString());
-      sock.on('end', () => { console.log('[tvdiag] socket beacon: '+resp.substring(0,200)); resolve(); });
-      sock.on('error', e => { console.log('[tvdiag] socket beacon failed: '+e.message); resolve(); });
-      sock.setTimeout(10000);
-      sock.on('timeout', () => { sock.destroy(); resolve(); });
-      sock.write(httpBody);
+    var http = require('http');
+    console.log('[tvdiag] http module available');
+    var req = http.request({
+      hostname: BEACON_HOST, port: BEACON_PORT,
+      path: '/tv-results', method: 'POST',
+      headers: {'Content-Type':'application/json','Content-Length': Buffer.byteLength(body)},
+      timeout: 10000
+    }, function(res) {
+      var d = '';
+      res.on('data', function(c) { d += c; });
+      res.on('end', function() { console.log('[tvdiag] http beacon: '+d); });
+    });
+    req.on('error', function(e) { console.log('[tvdiag] http beacon failed: '+e.message); });
+    req.on('timeout', function() { req.destroy(); });
+    req.write(body);
+    req.end();
+    promises.push(new Promise(function(resolve) {
+      setTimeout(function() { resolve('http timeout'); }, 12000);
     }));
   } catch(e) {
-    console.log('[tvdiag] socket method unavailable: '+e.message);
+    console.log('[tvdiag] http module unavailable: '+e.message);
   }
 
-  return Promise.all(promises).catch(e => console.log('[tvdiag] all beacons failed: '+e.message));
+  // Method 3: net module
+  try {
+    var net = require('net');
+    console.log('[tvdiag] net module available');
+    var sock = net.connect({host:BEACON_HOST, port:BEACON_PORT});
+    var httpBody = 'POST /tv-results HTTP/1.1\r\nHost: '+BEACON_HOST+':'+BEACON_PORT+'\r\nContent-Type: application/json\r\nContent-Length: '+body.length+'\r\nConnection: close\r\n\r\n'+body;
+    var done = false;
+    var p = new Promise(function(resolve) {
+      var resp = '';
+      sock.on('data', function(d) { resp += d.toString(); });
+      sock.on('end', function() { console.log('[tvdiag] net beacon: '+resp.substring(0,200)); resolve(); });
+      sock.on('error', function(e) { console.log('[tvdiag] net beacon failed: '+e.message); resolve(); });
+      sock.setTimeout(10000);
+      sock.on('timeout', function() { sock.destroy(); resolve(); });
+    });
+    sock.write(httpBody);
+    promises.push(p);
+  } catch(e) {
+    console.log('[tvdiag] net module unavailable: '+e.message);
+  }
+
+  // Method 4: tizen network API
+  try {
+    var tnet = tizen.require('network');
+    console.log('[tvdiag] tizen.network available');
+  } catch(e) {
+    console.log('[tvdiag] tizen.network not available');
+  }
+
+  // Retry after 5s if nothing worked
+  setTimeout(function() {
+    if (attempt < 5 && promises.length === 0) {
+      console.log('[tvdiag] retrying beacon (attempt '+attempt+')');
+      beacon(data, attempt + 1);
+    }
+  }, 5000);
+
+  return Promise.all(promises).catch(function(e) { console.log('[tvdiag] all beacons failed: '+e.message); });
 }
 
 // Run
 collect();
 writeLocal(results);
-beacon(results);
-// cache bust 1791793402
+console.log('[tvdiag] data collected, '+Object.keys(results).length+' fields');
+beacon(results, 0);
