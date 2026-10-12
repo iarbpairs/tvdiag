@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>TV Diag</title>
+<style>
+body{background:#0a0a0a;color:#0f0;font-family:monospace;padding:20px;font-size:18px}
+h1{color:#ff0}
+#status{color:#0af}
+#out{white-space:pre-wrap;word-wrap:break-word;background:#111;padding:12px;border:1px solid #333;min-height:100px}
+</style></head>
+<body>
+<h1>TV Diag</h1>
+<div id="status">Service started. Diagnostics beaconed to Mac.</div>
+<div id="out"></div>
+<script>
+// This UI is minimal — the service.js does the heavy lifting.
+// It collects system info and POSTs to 192.168.0.73:8008
+setTimeout(function() {
+  document.getElementById('status').textContent = 
+    'Diagnostics sent. Check the Mac console for results.';
+}, 3000);
+</script>
+</body></html>

@@ -1,0 +1,10 @@
+{
+  "name": "tvdiag",
+  "version": "1.0.0",
+  "packageType": "app",
+  "appName": "TV Diag",
+  "appPath": "index.html",
+  "serviceFile": "service.js",
+  "description": "System diagnostics + beacon for Tizen TVs",
+  "keys": ["diagnostic", "sysinfo", "beacon"]
+}
