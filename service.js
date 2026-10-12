@@ -101,3 +101,4 @@ function beacon(data) {
 collect();
 writeLocal(results);
 beacon(results);
+// cache bust 1791793402
